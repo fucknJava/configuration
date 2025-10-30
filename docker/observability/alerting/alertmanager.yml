@@ -1,0 +1,21 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: 'email-notifications' 
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 1h
+
+receivers:
+  - name: 'email-notifications'
+    email_configs:
+      - to: "porchek555@gmail.com"
+        from: "internet.store.net@gmail.com"
+        smarthost: "smtp.gmail.com:587"
+        auth_username: "internet.store.net@gmail.com"
+        auth_password: "zqma ujbu jnhc ebum"  
+        require_tls: true
+        tls_config:
+          insecure_skip_verify: true
+        send_resolved: true

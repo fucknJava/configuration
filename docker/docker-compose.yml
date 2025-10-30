@@ -1,0 +1,217 @@
+
+networks:
+  internet-store-network:
+    external: true
+
+services:
+
+  loki:
+    image: grafana/loki:2.9.0
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - internet-store-network
+
+  promtail:
+    image: grafana/promtail:2.9.0
+    volumes:
+      - ./logs/promtail-config.yml:/etc/promtail/promtail-config.yml
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: -config.file=/etc/promtail/promtail-config.yml
+    networks:
+      - internet-store-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./metrics/prometheus.yml:/etc/prometheus/prometheus.yml
+      - "C:/Users/Hamster Mainer/store/metrics/alerts.yml:/etc/prometheus/alerts.yml"
+    ports:
+      - "9090:9090"
+    networks:
+      - internet-store-network
+
+  alertmanager:
+    image: prom/alertmanager
+    container_name: alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./metrics/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    networks:
+      - internet-store-network
+
+  tempo:
+    image: grafana/tempo:latest
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./trace/tempo.yaml:/etc/tempo.yaml:ro
+    ports:
+      - "3200:3200" # Tempo API
+      - "9095:9095" # gRPC (OTLP)
+    networks:
+      - internet-store-network
+
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel-collector.yaml"]
+    volumes:
+      - ./trace/otel-collector.yaml:/etc/otel-collector.yaml:ro
+    networks:
+      - internet-store-network
+    ports:
+      - "4317:4317" # gRPC (для Java-агента)
+      - "4318:4318" # HTTP (если нужно)
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    ports:
+      - "3000:3000"
+    networks:
+      - internet-store-network
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - internet-store-network
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    networks:
+      - internet-store-network
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter
+    command:
+      - "--kafka.server=kafka:29092"
+    ports:
+      - "9308:9308"
+    networks:
+      - internet-store-network
+
+  postgres:
+    image: postgres:latest
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 123
+      POSTGRES_DB: postgres
+    networks:
+      - internet-store-network
+
+  user-service:
+    build: C:\Java projects\IdeaProjects\UserService
+    depends_on:
+      - kafka
+      - postgres
+      - loki
+    volumes:
+      - ./logs:/app/logs
+      - ./opentelemetry-javaagent.jar:/otel/opentelemetry-javaagent.jar
+    command: ["java", "-javaagent:/otel/opentelemetry-javaagent.jar", "-jar", "app.jar"]
+    environment:
+      LOGGING_CONFIG_URL: classpath:log4j2-spring-docker.xml
+      LOG_PATH: /app/logs/app.log
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/postgres
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      SPRING_REDIS_HOST: host.docker.internal
+      SPRING_REDIS_PORT: 6379
+      OTEL_SERVICE_NAME: user-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8081:8081"
+    networks:
+      - internet-store-network
+
+  product-service:
+    build: C:\Java projects\IdeaProjects\ProductService
+    depends_on:
+      - kafka
+      - postgres
+      - loki
+    volumes:
+      - ./opentelemetry-javaagent.jar:/otel/opentelemetry-javaagent.jar
+    command: ["java", "-javaagent:/otel/opentelemetry-javaagent.jar", "-jar", "app.jar"]
+    environment:
+      LOGGING_CONFIG_URL: classpath:log4j2-spring-docker.xml
+      USER_SERVICE_URL: http://store-user-service-1:8081
+      ORDER_SERVICE_URL: http://store-order-service-1:8083
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/postgres
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      OTEL_SERVICE_NAME: product-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
+    ports:
+      - "8082:8082"
+    networks:
+      - internet-store-network
+
+  order-service:
+    build: C:\Java projects\IdeaProjects\OrderService
+    depends_on:
+      - kafka
+      - postgres
+      - loki
+    volumes:
+      - ./opentelemetry-javaagent.jar:/otel/opentelemetry-javaagent.jar
+    command: ["java", "-javaagent:/otel/opentelemetry-javaagent.jar", "-jar", "app.jar"]
+    environment:
+      LOGGING_CONFIG_URL: classpath:log4j2-spring-docker.xml
+      USER_SERVICE_URL: http://store-user-service-1:8081
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/postgres
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      OTEL_SERVICE_NAME: order-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
+    ports:
+      - "8083:8083"
+    networks:
+      - internet-store-network
+
+  email-service:
+    build: C:\Java projects\IdeaProjects\EmailService
+    depends_on:
+      - kafka
+      - postgres
+      - loki
+    volumes:
+      - ./opentelemetry-javaagent.jar:/otel/opentelemetry-javaagent.jar
+    command: ["java", "-javaagent:/otel/opentelemetry-javaagent.jar", "-jar", "app.jar"]
+    environment:
+      LOGGING_CONFIG_URL: classpath:log4j2-spring-docker.xml
+      USER_SERVICE_URL: http://store-user-service-1:8081
+      PRODUCT_SERVICE_URL: http://store-product-service-1:8082
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      OTEL_SERVICE_NAME: email-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
+    ports:
+      - "8085:8085"
+    networks:
+      - internet-store-network

@@ -1,0 +1,30 @@
+groups:
+  - name: service-availability
+    rules:
+      - alert: ServiceDown
+        expr: up{job="internet-store"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Сервис {{ $labels.instance }} недоступен"
+          description: "Не отвечает endpoint {{ $labels.instance }}"
+  - name: kafka-rules
+    rules:
+      - alert: KafkaConsumerLagHigh
+        expr: kafka_consumergroup_lag > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Высокий lag у consumer group в топике {{ $labels.topic }}"
+          description: "{{ $value }} не прочитанных сообщений у группы {{ $labels.consumergroup }} в топике {{ $labels.topic }}"
+
+      - alert: KafkaDLQMessages
+        expr: kafka_topic_partition_current_offset{topic=~".*DLQ"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Новые сообщения в DLQ"
+          description: "В DLQ-топике {{ $labels.topic }} есть непрочитанные сообщения"
